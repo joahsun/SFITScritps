@@ -4,7 +4,7 @@
 ########################################################
 # Definition of variables                              #
 ########################################################
-VM_DIR=/var/lib/glance/images
+VM_DIR=/var/lib/glance/created-images
 workdir=`cd $(dirname ${BASH_SOURCE[0]}); pwd`
 
 ########################################################
@@ -166,7 +166,7 @@ function create_vm_img()
     --network=bridge:$BRIDGE,mac=$VM_MAC \
     --nographics \
     --location=http://$REPO_IP/rhel6/ \
-    --extra-args="ksdevice=bootif ks=http://$REPO_IP/scp/vmks.cfg biosdevname=0 console=ttyS0" \
+    --extra-args="ksdevice=bootif ks=http://10.10.0.11/repos/vmks.cfg biosdevname=0 console=ttyS0" \
     --noautoconsole
 
     doing "sleep 30"

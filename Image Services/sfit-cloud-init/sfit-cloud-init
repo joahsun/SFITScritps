@@ -1,0 +1,532 @@
+#!/bin/sh
+### SFIT_CLOUD_INIT_VERSION_STRING 1.1.0.1
+# Make sure this version string stays at the top of the file for version checking to work right
+
+# chkconfig: - 11 90
+# description: VM first-boot initialization script for forwarding user-data parameters
+### BEGIN INIT INFO
+# Provides:     sfit-cloud-init
+# Required-Start: network
+# Should-Start:
+# Required-Stop:
+# Default-Start:   3 5
+# Default-Stop:
+# Description:    VM first-boot initialization script for forwarding user-data parameters
+### END INIT INFO
+
+# Pass "--dev" at script execute time to have the script run in
+# dev mode for local testing.
+dev_mode_flag=$2
+
+MULTIPART_FILE=/tmp/multipart.file
+MULTIPART_DIR=/tmp/multipart
+MULTIPART_BOUNDARY="--::::::::::SFIT-iCloud-Boundary::::::::::"
+
+# Multipart Content Types
+MULTIPART_USERDATA_SCRIPT_TYPE="text/x-shellscript"
+MULTIPART_CLOUD_CONFIG_TYPE="text/cloud-config"
+MULTIPART_SFIT_UPDATE_URI_TYPE="text/sfit-update-uri"
+
+# Singlepart Content Headers
+SINGLEPART_USERDATA_SCRIPT_TYPE="#!"
+SINGLEPART_CLOUD_CONFIG_TYPE="#cloud-config"
+SINGLEPART_SFIT_UPDATE_URI_TYPE="#sfit-update-uri"
+
+ICLOUD_DIR=/opt/sfit/icloud
+
+MULTIPART_STATUS_FILE=$ICLOUD_DIR/multipart.status
+UPDATE_URI_FILE=$ICLOUD_DIR/update-location
+ICLOUD_LOG_FILE=$ICLOUD_DIR/sfit-icloud-init.log
+
+
+# accept header value to get instance meta info
+ACCEPT_META_INFO="application/rainmaker+instancemetainfo"
+# file stores meta resource information
+META_INFO_FILE=/tmp/metainfo.file
+# temp file stores ssh pub key
+SSH_PUB_KEY_FILE=/tmp/temp_id_rsa.pub
+#temp file to store the cloud-init script
+SFIT_CLOUD_INIT_FILE=/tmp/temp-sfit-cloud-init
+
+log_entry(){
+  local strLogType=$1
+  local strLogEntry=$2
+
+  if [ ! $strLogType == "information" ] && [ ! $strLogType == "error" ]; then
+     echo "Can't log events of type $strLogType only 'information' or 'error' should be used." >&2
+     return
+  fi
+  if [ $strLogType == "information" ]; then
+     echo "$strLogEntry"
+  else
+     echo "$strLogEntry" >&2
+  fi
+  local dateStr=`date`
+  echo "$dateStr $strLogType -- $strLogEntry" >> $ICLOUD_LOG_FILE
+}
+
+processMultipartFile(){
+  local file=$1
+  local file_number=$2
+  local LINES=`cat $file | wc -l`
+  log_entry "information" "$file has $LINES lines"
+  if [ $LINES -gt 1 ]; then
+        # log_entry "information" "Procesing Multipart"
+        MultiPartHandler $file $file_number
+  else
+        log_entry "information" "user-data part too small, part skipped"
+  fi
+}
+
+MultiPartHandler(){
+  local file=$1
+  local status_line_number=$2
+
+  local content_type=`grep 'Content-type:' $file  | awk '{ print $2 }'`
+  # Remove any ; at the end
+  local content_type=`echo "$content_type" | sed -e "s/;//g"`
+
+  local part_status=`cat $MULTIPART_STATUS_FILE | awk "NR==$status_line_number"`
+
+  if [ "$part_status" != "$content_type,OK" ]; then
+    log_entry "information" "About to process Content Type=$content_type, MIME entry $status_line_number"
+
+    case $content_type in
+    $MULTIPART_SFIT_UPDATE_URI_TYPE)
+          MultiPartSFITUpdateURIHandler $file
+          ;;
+    $MULTIPART_USERDATA_SCRIPT_TYPE)
+          MultiPartScriptHandler $file
+          ;;
+    $MULTIPART_CLOUD_CONFIG_TYPE)
+          MultiPartCloudConfigHandler $file
+          ;;
+    multipart/mixed)
+          log_entry "information" "Ignoring contents inside multipart/mixed MIME block"
+          ;;
+    *)    if [ $content_type ] ; then
+            log_entry "error" "Multipart Content $content_type is not supported"
+          fi
+          ;;
+    esac
+
+    echo "$content_type,OK" >> $MULTIPART_STATUS_FILE
+  else
+    log_entry "information" "Skipping Content Type=$content_type, MIME entry $status_line_number as it was already processed earlier"
+  fi
+}
+
+MultiPartSFITUpdateURIHandler(){
+  local file=$1
+  log_entry "information" "SFITUpdateURI data is in $file"
+  grep -Ev "${MULTIPART_BOUNDARY:2}|$MULTIPART_SFIT_UPDATE_URI_TYPE|$SINGLEPART_SFIT_UPDATE_URI_TYPE" $file | while read -a LINE
+    do
+    if [ ! -z $LINE ] ; then
+      log_entry "information" "New SFIT update URI is $LINE"
+      rm -f $UPDATE_URI_FILE
+      echo "$LINE" > $UPDATE_URI_FILE
+    fi
+  done
+  ScanForUpdate
+  if [ $COMPARE_RESULT == -1 ]; then
+      log_entry "information" "Going to update sfit-cloud-init and re-run it now..."
+      cp ${SFIT_CLOUD_INIT_FILE} /etc/init.d/sfit-cloud-init
+      chmod 755 /etc/init.d/sfit-cloud-init
+      /etc/init.d/sfit-cloud-init start $dev_mode_flag
+      exit 0
+  else
+      # Remove the same or older version that was downloaded
+      rm -f ${SFIT_CLOUD_INIT_FILE}
+  fi
+}
+
+
+MultiPartScriptHandler(){
+  local file=$1
+  log_entry "information" "ScriptHandler data is in $file"
+
+  # First line of the userdata-script.remover will remove this script exection from the /etc/rc.local,
+  # so it is only invoked once per instance's first-boot
+  if [ -e $ICLOUD_DIR/userdata-script.remover ] ; then
+    rm -f $ICLOUD_DIR/userdata-script.remover
+  fi
+  echo "sed -i '/"$ICLOUD_DIR"\/userdata-script.*/d' /etc/rc.local" > $ICLOUD_DIR/userdata-script.remover
+  chmod 755 $ICLOUD_DIR/userdata-script.remover
+  grep -Ev "${MULTIPART_BOUNDARY:2}|$MULTIPART_USERDATA_SCRIPT_TYPE" $file >> $ICLOUD_DIR/userdata-script
+  chmod 755 $ICLOUD_DIR/userdata-script
+
+  echo "$ICLOUD_DIR/userdata-script.remover" >> /etc/rc.local
+  echo "$ICLOUD_DIR/userdata-script" >> /etc/rc.local
+}
+
+MultiPartCloudConfigHandler(){
+  local file=$1
+  log_entry "information" "CloudConfigHandler data is in $file"
+
+  local mode=""
+
+  cat $file | while read LINE
+  do
+    case $LINE in
+    "packages:")
+          mode=${LINE%:}
+          ;;
+    "runcmd:")
+          mode=${LINE%:}
+          ;;
+    esac
+
+    if [ -n $mode ]; then
+
+      if [ "$mode" == "packages" ] && [[ "$LINE" == -* ]]; then
+        # Install packages
+        package=${LINE// /} # remove whitespace from the line
+        package=${package:1} # remove the "-" at the beginning of the line
+
+        log_entry "information" "Installing $package and its dependencies..."
+        # yum is RHEL/fedora/centos specific,
+        # need to use zypper if yum is not found to support SuSE, openSuSE
+        if [ ! -z `which yum` ]; then
+          yum -y install $package
+        else
+          zypper --non-interactive install $package
+        fi
+      elif [ "$mode" == "runcmd" ] && [[ "$LINE" == -* ]]; then
+        # execute a command
+        cmd=${LINE##*[} # strip front dash and bracket ("- [" -> "")
+        cmd=${cmd%]*} # strip rear bracket ("]" -> "")
+        cmd=${cmd//[,|, ]/ } # convert comma delimeters to spaces ("," -> " ")
+
+        log_entry "information" "Executing the following command: $cmd"
+        ( eval "$cmd" )
+      fi
+
+    fi
+  done
+}
+
+# import SSH Pub key from EC2
+importEC2SSHPubKey() {
+  curl -f http://169.254.169.254/latest/meta-data/public-keys/0/openssh-key > /tmp/aws-key 2>/dev/null
+  if [ $? -eq 0 ]; then
+    # Only add the key if it does not already exist
+    mkdir -p /root/.ssh/
+    touch /root/.ssh/authorized_keys
+    grep -q -f /tmp/aws-key /root/.ssh/authorized_keys
+    if [ $? -eq 1 ]; then
+      cat /tmp/aws-key >> /root/.ssh/authorized_keys
+      chmod 0600 /root/.ssh/authorized_keys
+      restorecon /root/.ssh/authorized_keys
+      rm -f /tmp/aws-key
+      log_entry "information" "Successfully retrieved AWS public key from instance metadata"
+    fi
+  fi
+}
+
+
+
+NUM_VERSION_DIGITS=4
+compareVersions(){
+  typeset    IFS='.'
+  typeset -a v1=( $1 )
+  typeset -a v2=( $2 )
+  typeset    n diff
+
+  COMPARE_RESULT=0
+  for (( n=0; n<$NUM_VERSION_DIGITS; n+=1 )); do
+    diff=$((v1[n]-v2[n]))
+    if [ $diff -ne 0 ] ; then
+      if [ $diff -le 0 ] ; then
+        COMPARE_RESULT=-1
+        return
+      fi
+      COMPARE_RESULT=1
+      return
+    fi
+  done
+  return
+}
+
+
+ScanForUpdate(){
+  local UPDATE_APPLIED=false
+  local UPDATE_LOCATION=`cat $UPDATE_URI_FILE`
+  local CURRENT_VERSION_STR=`grep SFIT_CLOUD_INIT_VERSION_STRING /etc/init.d/sfit-cloud-init | head -n 1 | awk '{ print $3 }'`
+  ( curl -k -L --max-redirs 3 -v -o ${SFIT_CLOUD_INIT_FILE} $UPDATE_LOCATION/sfit-cloud-init >/dev/null 2>&1 )
+  local UPDATE_VERSION_STR="0.0.0.0"
+  if [ -e ${SFIT_CLOUD_INIT_FILE} ]; then
+    UPDATE_VERSION_STR=`grep SFIT_CLOUD_INIT_VERSION_STRING ${SFIT_CLOUD_INIT_FILE} | head -n 1 | awk '{ print $3 }'`
+    if [ -z $UPDATE_VERSION_STR ]; then
+      UPDATE_VERSION_STR="0.0.0.0"
+    fi
+  fi
+  COMPARE_RESULT=0
+  compareVersions $CURRENT_VERSION_STR $UPDATE_VERSION_STR
+  log_entry "information" "Current version of sfit-cloud-init is $CURRENT_VERSION_STR, update version at $UPDATE_LOCATION is $UPDATE_VERSION_STR, compare returned $COMPARE_RESULT"
+}
+
+stop(){
+   log_entry "information" "sfit-cloud-init service called with stop \(do nothing\)..."
+   log_entry "information" "Done."
+}
+
+start(){
+    # check if ${ICLOUD_DIR} directory exists
+    if [ ! -d $ICLOUD_DIR ]; then
+            mkdir -p $ICLOUD_DIR
+    fi
+
+    INTF=$(/sbin/ifconfig -a | awk '/HWaddr/ {ifc=$1; } /inet addr/ {ip=$2; ifc=""} /BROAD/ && ifc { print ifc; exit 1; }')
+    if [ "$INTF" == "eth0" ]; then
+            log_entry "error" "eth0 has no IP address, doing nothing"
+            exit 0
+    fi
+
+    if [ ! -e $UPDATE_URI_FILE ] ; then
+       echo "http://SFITiCloud/downloads/cloud-init/" > $UPDATE_URI_FILE
+    fi
+
+    ScanForUpdate
+    if [ $COMPARE_RESULT == -1 ]; then
+      log_entry "information" "Going to update sfit-cloud-init and re-run it..."
+      cp ${SFIT_CLOUD_INIT_FILE} /etc/init.d/sfit-cloud-init
+      chmod 755 /etc/init.d/sfit-cloud-init
+      /etc/init.d/sfit-cloud-init start $dev_mode_flag
+      exit 0
+    else
+      # Remove the same or older version that was downloaded
+      rm -f ${SFIT_CLOUD_INIT_FILE}
+    fi
+
+    mac_file="$ICLOUD_DIR/last_mac"
+    in_progress_file="$ICLOUD_DIR/in_progress"  # handles reboots done by part-handlers
+    current_mac=`ifconfig -a eth0 | grep HWaddr | awk '{print $5}'`
+    if [ -e $mac_file ]; then
+            last_mac=`cat $mac_file`
+    else
+            last_mac=""
+    fi
+    log_entry "information" "current MAC is $current_mac, prior boot's MAC is $last_mac"
+
+    if [ "$current_mac" == "$last_mac" ] && [ "$dev_mode_flag" != "--dev" ] && [ ! -e $in_progress_file ]; then
+            echo "Same MAC address as last boot, doing nothing"
+            exit 0
+    else
+            # Update the last_mac file
+            rm -f $mac_file
+            ifconfig -a eth0 | grep HWaddr | awk '{print $5}' > $mac_file
+            if [ ! -e $in_progress_file ]; then
+              # This is the first time after a mac-address change (or --dev was specified), so we need to clear
+              # the status file so all the part-handlers run again
+              rm -f $MULTIPART_STATUS_FILE
+
+              if [ "$current_mac" != "$last_mac" ]; then
+                # Purge most of the old entries from the log file as they may be sensitive data from the prior system
+                log_entry "information" "purging prior log entries since we're on new VM"
+                tail -n 5 $ICLOUD_LOG_FILE > $ICLOUD_LOG_FILE.tmp
+                mv $ICLOUD_LOG_FILE.tmp $ICLOUD_LOG_FILE
+              fi
+
+              log_entry "information" "Creating the in-progress file now"
+              date > $in_progress_file
+
+              # Since this is a fresh start of the script, not a reboot, we can safely delete any prior userdata scripts
+              if [ -e $ICLOUD_DIR/userdata-script ] ; then
+                rm -f $ICLOUD_DIR/userdata-script
+              fi
+            fi
+            log_entry "information" "Start processing sfit-cloud-init"
+    fi
+
+    # Lets try to load the EC2 keypair
+    importEC2SSHPubKey
+
+    # Clean out any prior MULTIPART processing
+    # and then retrieve the new user-data
+    if [ -e $MULTIPART_FILE ] ; then
+      rm -f $MULTIPART_FILE
+    fi
+    rm -rf $MULTIPART_DIR
+    mkdir -p $MULTIPART_DIR
+    USER_DATA_FOUND="false"
+
+    # If we are in dev mode, use a local user-data file
+    if [ "$dev_mode_flag" == "--dev" ] ; then
+      if [ -e /tmp/user-data ] ; then
+        cp -f /tmp/user-data $MULTIPART_FILE
+        log_entry "information" "Found user-data at /tmp/user-data"
+        USER_DATA_FOUND="true"
+      fi
+    fi
+
+    # First try the virtual CDROM
+    if [ "$USER_DATA_FOUND" != "true" ] ; then
+      ls /dev/cdrom* | while read CDROM_DEVICE
+      do
+        mkdir -p /mnt/cdrom
+        mount $CDROM_DEVICE /mnt/cdrom
+        if [ -e /mnt/cdrom/user-data ] ; then
+          cp -f /mnt/cdrom/user-data $MULTIPART_FILE
+          log_entry "information" "Found user-data on cdrom"
+          umount /mnt/cdrom 
+          break
+        elif [ -e /mnt/cdrom/ec2/latest/user-data ] ; then
+          cp -f /mnt/cdrom/ec2/latest/user-data $MULTIPART_FILE
+          log_entry "information" "Found user-data on cdrom"
+          umount /mnt/cdrom 
+          break
+        fi
+        umount /mnt/cdrom
+      done
+      if [ -e $MULTIPART_FILE ] ; then
+        # can't set USER_DATA_FOUND inside piped do-loop... bash restriction
+        USER_DATA_FOUND="true"
+      fi
+    fi
+
+    # Try the OpenStack config-drive config/ec2/latest/user-data
+    if [ "$USER_DATA_FOUND" != "true" ] ; then
+      CONFIG_DRIVE="/dev/disk/by-label/config-2"
+      if [ -e $CONFIG_DRIVE ] ; then
+        log_entry "information" "OS supports accessing disk by label"
+      else
+        CONFIG_DRIVE=`blkid -t LABEL="config-2" -odevice`
+      fi
+      mkdir -p /mnt/config
+      mount $CONFIG_DRIVE /mnt/config
+      log_entry "information" "The config drive is $CONFIG_DRIVE"
+      if [ -e /mnt/config/ec2/latest/user-data ] ; then
+        cp -f /mnt/config/ec2/latest/user-data $MULTIPART_FILE
+        log_entry "information" "Found user-data on $CONFIG_DRIVE"
+      fi
+      umount /mnt/config
+      if [ -e $MULTIPART_FILE ] ; then
+        USER_DATA_FOUND="true"
+      fi
+    fi
+    
+
+    # Next try the EC2's 169.254.169.254/latest/user-data
+    if [ "$USER_DATA_FOUND" != "true" ] ; then
+      USER_DATA_URL=http://169.254.169.254/latest/user-data
+      curl --connect-timeout 30 -f $USER_DATA_URL > $MULTIPART_FILE
+      if [ "$?" == "0" ] ; then
+        log_entry "information" "Found user-data at 169.254.169.254/latest/user-data"
+        USER_DATA_FOUND="true"
+      fi
+    fi
+
+    # Next try 10.10.10.1/latest/user-data (just for testing)
+    # if [ $USER_DATA_FOUND != "true" ] ; then
+    #  curl --connect-timeout 30 -f http://10.10.0.1/latest/user-data > $MULTIPART_FILE
+    #  if [ "$?" == "0" ]; then
+    #     log_entry "information" "Found user-data at 10.10.0.1/latest/user-data"
+    #     USER_DATA_FOUND="true"
+    #  fi
+    # fi
+
+    if [ "$USER_DATA_FOUND" != "true" ] ; then
+      log_entry "error" "Unable to retrieve the user-data from various sources, skipping processing"
+      rm -f $MULTIPART_FILE
+      exit 0
+    fi
+
+    chmod 0600 $MULTIPART_FILE
+    cd $MULTIPART_DIR
+
+    # This is a hack to extract the multipart-boundary if one exists
+    # We're assuming it will be in the first 4 lines of the user-data
+    # but this should be good enough without importing the full perl
+    # MIME support libraries, which we don't want to pre-req to this script
+    boundary_line=`cat $MULTIPART_FILE | head -n 4 | grep "boundary="`
+    if [ ! -z "$boundary_line" ] ; then
+       # The xargs echo -e removes any " layering around the string we want
+       # example lines are like:
+       # Content-Type: multipart/digest;
+       #     boundary="---- next message ----"
+       MULTIPART_BOUNDARY=`echo $boundary_line | sed -e "s/.*boundary=\(.*\)$/\1/" | xargs echo -e`
+       # In usage, there will always be a preceeding -- according to the MIME RFC
+       MULTIPART_BOUNDARY="--$MULTIPART_BOUNDARY"
+       log_entry "information" "boundary line detected to be $MULTIPART_BOUNDARY"
+    fi
+
+    # We grep against the boundary to tell if this is multipart or singlepart
+    boundary_match_cmd="cat $MULTIPART_FILE | grep -c -e '$MULTIPART_BOUNDARY'"
+    boundary_matches=`eval $boundary_match_cmd`
+    if [ "$boundary_matches" != "0" ] ; then
+      # Remove any MIME-version lines that might be at the beginning
+      sed -i "s/.*MIME-Version:.*//g" $MULTIPART_FILE
+      # split the multipart file
+      csplit -k -q $MULTIPART_FILE /$MULTIPART_BOUNDARY.*$/ '{*}'
+      chmod 0600 -R $MULTIPART_DIR
+
+      # process the splitted multipart files
+      touch $MULTIPART_STATUS_FILE # Ensure that $MULTIPART_STATUS_FILE exists
+      index=0
+      for f in $MULTIPART_DIR/*
+      do
+        log_entry "information" "Processing $f file..."
+        # take action on each file. $f store current file name
+        processMultipartFile $f $index
+        index=`expr $index + 1`
+      done
+    else
+      # No MIME boundaries found, assume this is only a single type,
+      # identified by a SINGLEPART-header
+      header=`cat $MULTIPART_FILE | head -n 1 | awk '{ print $1 }'`
+      log_entry "information" "About to process single-part header $header"
+      case "$header" in
+         $SINGLEPART_CLOUD_CONFIG_TYPE)
+            MultiPartCloudConfigHandler $MULTIPART_FILE
+         ;;
+         $SINGLEPART_SFIT_UPDATE_URI_TYPE)
+            MultiPartSFITUpdateURIHandler $MULTIPART_FILE
+         ;;
+         *) # Could be a #!<shell-path>, need to grep for the #!
+            if [ `echo $header | grep -E "^\#\!"` ] ; then
+               MultiPartScriptHandler $MULTIPART_FILE
+            else
+               log_entry "error" "Unrecognized user-data single-part header of $header"
+            fi
+         ;;
+      esac
+    fi
+
+    # All done, no more reboots required, delete the in-progress file
+    if [ -e $in_progress_file ]; then
+      log_entry "information" "All done with processing, no more reboots required, deleting in-progress file"
+      rm -f $in_progress_file
+    fi
+}
+
+install(){
+  echo "information" "sfit-cloud-init service called with install"
+  cp $0 /etc/init.d/sfit-cloud-init
+  chown root:root /etc/init.d/sfit-cloud-init
+  chmod 755 /etc/init.d/sfit-cloud-init
+  chkconfig sfit-cloud-init on
+}
+
+
+##########################################################
+##########################################################
+##########################################################
+##########################################################
+##########################################################
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    install)
+        install
+        ;;
+    *)
+        #if no parameters are given, print which are available.
+        echo "Usage: $0 {start|stop}"
+        exit 1
+        ;;
+esac
