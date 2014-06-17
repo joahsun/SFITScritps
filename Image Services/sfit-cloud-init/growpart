@@ -98,7 +98,7 @@ mktemp_d() {
 	_RET=$(mktemp -d "${TMPDIR:-/tmp}/${0##*/}.XXXXXX" 2>/dev/null) &&
 		return
 	_RET=$(umask 077 && t="${TMPDIR:-/tmp}/${0##*/}.$$" &&
-		mkdir "${t}" &&	echo "${t}")
+		mkdir -p "${t}" &&	echo "${t}")
 	return
 }
 

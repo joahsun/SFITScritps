@@ -5,3 +5,12 @@ resize2fs
 sed
 awk
 partprobe
+bash
+sh
+cat
+lvm
+partx
+mkdir
+grep
+mktemp
+rm
