@@ -21,17 +21,13 @@ Prereq: util-linux
 %setup -c
 
 %install
-rm -rf $RPM_BUILD_ROOT
-mkdir -p $RPM_BUILD_ROOT%{instdir}/cookbooks
-cp -r * $RPM_BUILD_ROOT%{instdir}/cookbooks/
-rm -f $RPM_BUILD_ROOT%{instdir}/cookbooks/cookbooks.spec
 
 %clean
-rm -rf $RPM_BUILD_ROOT
+
 
 %files
 %defattr(755,root,root)
-%{instdir}/cookbooks/*/
+%{instdir}/
 
 
 %changelog
