@@ -1,7 +1,7 @@
 #!/bin/bash
-echo "[] linux-rootfs-resize ... root is ${root}"
+echo "[] linux-rootfs-resize ... "
 lvm vgchange -an
-lvm_lv_root=/dev/VolGroup00/LogVol00
+lvm_lv_root=ROOTVOLUME
 lvm_pv_path=$(lvm pvs --noheadings |awk '{print $1}')
 lvm_pv_temp=$(echo ${lvm_pv_path}|sed "s/dev//g")
 lvm_pv_dev=$(echo ${lvm_pv_temp}|sed "s/[^a-z]//g")
