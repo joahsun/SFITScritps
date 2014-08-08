@@ -1,0 +1,118 @@
+磁盘测试参数变化：磁盘内外道，smp_affinity设置，启动器版本，操作系统版本，内核相关设置，内核调度设置，文件系统ext2 /ext3/ext4和文件noatime设置等。
+
+
+
+
+
+smp_affinity:
+- "balance" out multiple NICs in a multi-processor machine.  By tying a single
+  NIC to a single CPU, you should be able to scale the amount of traffic
+  your server can handle nicely.
+
+- database servers (or servers with lots of disk storage) that also have
+  heavy network loads can dedicate a CPU to their disk controller and assign
+  another to deal with the NIC to help improve response times.
+
+  affinity 如果设置为fff，差别不大.
+  TODO： 新驱动后设置。
+jobname            avg_lat(us) min_lat(us) max_lat(us)  std_dev
+FIO_128_new_tmp          44.35       41.00     2981.00    11.00
+FIO_128_append_tmp      170.68      140.00    19921.00   180.87
+FIO_256_new_tmp          46.01       41.00     4814.00    23.36
+FIO_256_append_tmp      109.24       41.00    19466.00   125.65
+FIO_512_new_tmp          48.97       42.00     7407.00    44.16
+FIO_512_append_tmp      112.68       42.00    11408.00   123.68
+FIO_1k_new_tmp           54.28       42.00     1238.00    24.39
+FIO_1k_append_tmp       121.35       42.00     9275.00   126.09
+
+更新驱动：差别不大
+jobname            avg_lat(us) min_lat(us) max_lat(us)  std_dev
+FIO_128_new_tmp          43.95       41.00     1341.00     8.80
+FIO_128_append_tmp      169.03      137.00    16107.00   147.36
+FIO_256_new_tmp          45.61       41.00     4818.00    22.88
+FIO_256_append_tmp      108.42       41.00    20174.00   138.01
+FIO_512_new_tmp          48.46       41.00     6740.00    40.59
+FIO_512_append_tmp      112.34       42.00    15176.00   146.15
+FIO_1k_new_tmp           53.97       42.00     1267.00    25.15
+FIO_1k_append_tmp       119.04       42.00     7342.00   117.93
+
+
+#####BLOCK LVL########
+[root@host129 ~]# cat /sys/block/sda/queue/nr_requests
+128
+[root@host129 ~]# echo 64 > /sys/block/sda/queue/nr_requests
+
+[root@host129 ~]# cat /sys/block/sda/queue/read_ahead_kb
+128
+[root@host129 ~]# echo 512 > /sys/block/sda/queue/read_ahead_kb
+jobname            avg_lat(us) min_lat(us) max_lat(us)  std_dev
+FIO_128_new_tmp          44.06       41.00     1569.00     8.82
+FIO_128_append_tmp      164.38      140.00    20850.00   138.33
+FIO_256_new_tmp          45.62        0.00     4390.00    21.34
+FIO_256_append_tmp      108.20       41.00    15362.00   113.25
+FIO_512_new_tmp          48.49       41.00     1217.00    16.86
+FIO_512_append_tmp      111.85       42.00     9970.00   113.32
+FIO_1k_new_tmp           54.34        0.00     1257.00    24.73
+FIO_1k_append_tmp       118.96       42.00     8253.00   120.93
+
+测试用例：
+随机读写、连续读写、IO引擎、IO停顿
+
+
+模式 write&sync&think_time=10
+磁盘内外道
+（连续读写吞吐量外道比内道好）
+延迟的话：
+  new: 差不多相差不大.
+  append：外道比内道差10us左右.
+内道：
+jobname            avg_lat(us) min_lat(us) max_lat(us)  std_dev
+FIO_128_new_data         44.25       41.00     3115.00    11.54
+FIO_128_append_data      95.60        0.00     7752.00    57.75
+FIO_256_new_data         45.50       41.00     3845.00    21.42
+FIO_256_append_data      97.13        0.00     2517.00    53.81
+FIO_512_new_data         47.71        0.00      509.00    13.71
+FIO_512_append_data      98.67        0.00     1556.00    53.14
+FIO_1k_new_data          53.47       42.00     1996.00    24.81
+FIO_1k_append_data      104.30        0.00     1850.00    55.07
+外道：
+jobname            avg_lat(us) min_lat(us) max_lat(us)  std_dev
+FIO_128_new_tmp          43.98        0.00     2331.00     9.79
+FIO_128_append_tmp      163.49        0.00    20556.00   132.54
+FIO_256_new_tmp          45.81       41.00     4590.00    21.36
+FIO_256_append_tmp      108.56       41.00    20554.00   148.73
+FIO_512_new_tmp          48.45       41.00     1230.00    17.87
+FIO_512_append_tmp      108.15        0.00    10293.00   105.56
+FIO_1k_new_tmp           54.38       42.00     1232.00    25.06
+FIO_1k_append_tmp       118.74       42.00     5044.00   109.41
+
+
+
+测试用例结果：
+
+不同同步模式的区别：
+加O_DIRECT: bs=512时，延迟在35us左右，相比sync，抖动小，stddev<5, 延迟小，快10us
+加sync：延迟和在文件末尾写和开头写有很大关系，差一倍以上。
+        bs=512时，当在开头写，file_append=0,delay~=48us,比direct大10us以上，stdev~=17，比direct大
+                  当在结尾写，file_append=1,delay~=108us,比开头写大一倍以上，比direct大两倍以上，stdev~=105，相对很大.
+当不是sync模式时，delay<3us
+
+
+不同io engine的差别：
+用sync和libaio，相对来说差别不大。和预测一致
+
+IO 停顿：
+差别不大，和预测一致.
+
+随机读写，连续读写
+随机写比连续写慢一点点<3us，在末尾写影响不大，只增加<5us
+随机读写比连续写慢一点点<3us，在末尾写影响不大，只增加<5us
+
+bs size
+随着bs增大，延迟变长。
+在文件开头写：
+bs_size     avg_lat(us)
+128         43.98
+256         45.81
+512         48.45
+1k          54.38

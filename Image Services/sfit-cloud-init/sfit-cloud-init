@@ -18,6 +18,8 @@
 # dev mode for local testing.
 dev_mode_flag=$2
 
+METADATA_FILE=/tmp/metadata.file
+
 MULTIPART_FILE=/tmp/multipart.file
 MULTIPART_DIR=/tmp/multipart
 MULTIPART_BOUNDARY="--::::::::::SFIT-iCloud-Boundary::::::::::"
@@ -38,11 +40,6 @@ MULTIPART_STATUS_FILE=$ICLOUD_DIR/multipart.status
 UPDATE_URI_FILE=$ICLOUD_DIR/update-location
 ICLOUD_LOG_FILE=$ICLOUD_DIR/sfit-icloud-init.log
 
-
-# accept header value to get instance meta info
-ACCEPT_META_INFO="application/rainmaker+instancemetainfo"
-# file stores meta resource information
-META_INFO_FILE=/tmp/metainfo.file
 # temp file stores ssh pub key
 SSH_PUB_KEY_FILE=/tmp/temp_id_rsa.pub
 #temp file to store the cloud-init script
@@ -338,8 +335,12 @@ start(){
             log_entry "information" "Start processing sfit-cloud-init"
     fi
 
-    # Lets try to load the EC2 keypair
-    importEC2SSHPubKey
+    # Clean out prior instance METADATA processing
+    # and then retrieve the new meta-data
+    if [ -e $METADATA_FILE ] ; then
+      rm -f $METADATA_FILE
+    fi
+    META_DATA_FOUND="false"
 
     # Clean out any prior MULTIPART processing
     # and then retrieve the new user-data
@@ -350,8 +351,13 @@ start(){
     mkdir -p $MULTIPART_DIR
     USER_DATA_FOUND="false"
 
-    # If we are in dev mode, use a local user-data file
+    # If we are in dev mode, use a local user-data,meta-data file
     if [ "$dev_mode_flag" == "--dev" ] ; then
+    if [ -e /tmp/meta-data ] ; then
+        cp -f /tmp/meta-data $METADATA_FILE
+        log_entry "information" "Found meta-data at /tmp/meta-data"
+        USER_META_FOUND="true"
+      fi
       if [ -e /tmp/user-data ] ; then
         cp -f /tmp/user-data $MULTIPART_FILE
         log_entry "information" "Found user-data at /tmp/user-data"
@@ -360,32 +366,34 @@ start(){
     fi
 
     # First try the virtual CDROM
-    if [ "$USER_DATA_FOUND" != "true" ] ; then
+    if [ "$USER_DATA_FOUND" != "true" -o "$METADATA_FILE" != "true" ] ; then
       ls /dev/cdrom* | while read CDROM_DEVICE
       do
         mkdir -p /mnt/cdrom
         mount $CDROM_DEVICE /mnt/cdrom
-        if [ -e /mnt/cdrom/user-data ] ; then
-          cp -f /mnt/cdrom/user-data $MULTIPART_FILE
-          log_entry "information" "Found user-data on cdrom"
-          umount /mnt/cdrom 
-          break
+        if [ -e /mnt/cdrom/openstack/latest/user-data ] ; then
+          cp -f /mnt/cdrom/openstack/latest/user-data $MULTIPART_FILE
         elif [ -e /mnt/cdrom/ec2/latest/user-data ] ; then
           cp -f /mnt/cdrom/ec2/latest/user-data $MULTIPART_FILE
-          log_entry "information" "Found user-data on cdrom"
-          umount /mnt/cdrom 
-          break
+        fi
+        if [ -e /mnt/cdrom/openstack/latest/meta_data.json ] ; then
+          cp -f /mnt/cdrom/openstack/latest/meta_data.json $METADATA_FILE
         fi
         umount /mnt/cdrom
       done
       if [ -e $MULTIPART_FILE ] ; then
         # can't set USER_DATA_FOUND inside piped do-loop... bash restriction
+        log_entry "information" "Found user-data on cdrom"
         USER_DATA_FOUND="true"
+      fi
+      if [ -e $METADATA_FILE ] ; then
+        log_entry "information" "Found meta-data on cdrom"
+        META_DATA_FOUND="true"
       fi
     fi
 
     # Try the OpenStack config-drive config/ec2/latest/user-data
-    if [ "$USER_DATA_FOUND" != "true" ] ; then
+    if [ "$USER_DATA_FOUND" != "true" -o "$META_DATA_FOUND" != "true" ] ; then
       CONFIG_DRIVE="/dev/disk/by-label/config-2"
       if [ -e $CONFIG_DRIVE ] ; then
         log_entry "information" "OS supports accessing disk by label"
@@ -430,6 +438,9 @@ start(){
       rm -f $MULTIPART_FILE
       exit 0
     fi
+
+    # Lets try to load the EC2 keypair
+    importEC2SSHPubKey
 
     chmod 0600 $MULTIPART_FILE
     cd $MULTIPART_DIR

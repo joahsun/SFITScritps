@@ -1,0 +1,31 @@
+1. RHEL65
+a) base
+jobname            avg_lat(us) min_lat(us) max_lat(us)  std_dev
+FIO_128_new_tmp          53.13       48.00     4631.00    15.64
+FIO_128_append_tmp      7978.64      334.00     8228.00   221.76
+FIO_256_new_tmp          54.04       47.00     7437.00    31.34
+FIO_256_append_tmp      7966.99      179.00     8959.00   366.16
+FIO_512_new_tmp          56.78       48.00      786.00    15.93
+FIO_512_append_tmp      7983.68      334.00    15010.00   300.42
+FIO_1k_new_tmp           63.12       48.00      259.00    20.14
+FIO_1k_append_tmp       7977.71      330.00     8235.00   231.67
+jobname            avg_lat(us) min_lat(us) max_lat(us)  std_dev
+FIO_128_new_tmp          53.06       48.00     7499.00    25.72
+FIO_128_append_tmp      7978.59      325.00     8958.00   229.18
+FIO_256_new_tmp          54.09       48.00     7856.00    32.70
+FIO_256_append_tmp      7978.57      319.00     8812.00   232.95
+FIO_512_new_tmp          57.21       48.00     7930.00    46.58
+FIO_512_append_tmp      7984.85      318.00    15065.00   309.61
+FIO_1k_new_tmp           62.95       48.00      230.00    19.97
+FIO_1k_append_tmp       7981.32      352.00    11559.00   263.07
+jobname            avg_lat(us) min_lat(us) max_lat(us)  std_dev
+FIO_128_new_tmp          52.90       48.00     7569.00    22.71
+FIO_128_append_tmp      7982.45      339.00    11839.00   255.41
+FIO_256_new_tmp          54.08       47.00     7688.00    43.27
+FIO_256_append_tmp      7978.45      333.00     8216.00   224.32
+FIO_512_new_tmp          56.90       48.00      723.00    15.84
+FIO_512_append_tmp      7972.68      345.00     8926.00   279.58
+FIO_1k_new_tmp           62.91       48.00      524.00    20.85
+FIO_1k_append_tmp       7974.44      329.00     8711.00   273.57
+
+
